@@ -50,20 +50,6 @@ def redact_text(text: str) -> str:
         return ""
     # remove common 'deleted' placeholders
     text = text.replace("[deleted]", "").replace("[removed]", "")
-    # redact URLs and emails
-    text = URL_RE.sub("[URL]", text)
-    text = EMAIL_RE.sub("[EMAIL]", text)
-    # optionally redact explicit u/username patterns (keeps text readable)
-    text = re.sub(r"u\/[A-Za-z0-9_-]{3,}", "[USER]", text)
-    # general username patterns (conservative)
-    text = USERNAME_RE.sub(
-        lambda m: (
-            "[USER]"
-            if m.group(0).startswith("u/") or m.group(0).startswith("/u/")
-            else m.group(0)
-        ),
-        text,
-    )
     return text.strip()
 
 
@@ -78,14 +64,14 @@ def init_reddit_creds():
     return reddit
 
 
-def extract_top_comments(submission, top_n=5) -> List[Dict[str, Any]]:
+def extract_top_comments(post, top_n=5) -> List[Dict[str, Any]]:
     """Return top_n top-level comments by score. Skip removed/deleted bodies."""
     try:
-        submission.comments.replace_more(limit=0)
+        post.comments.replace_more(limit=0)
     except Exception as e:
-        logger.warning(f"replace_more failed for {submission.id}: {e}")
+        logger.warning(f"replace_more failed for {post.id}: {e}")
     comments = []
-    for c in submission.comments:
+    for c in post.comments:
         if isinstance(c, MoreComments):
             continue
         body = getattr(c, "body", None)
@@ -100,7 +86,6 @@ def extract_top_comments(submission, top_n=5) -> List[Dict[str, Any]]:
                 "score": getattr(c, "score", 0),
                 "created_utc": getattr(c, "created_utc", None),
                 "is_submitter": getattr(c, "is_submitter", False),
-                "author": "[USER]" if getattr(c, "author", None) else None,
             }
         )
     # sort by score desc
@@ -128,19 +113,19 @@ def scrape_subreddit(
 
     submissions = []
     # Choose generator based on sort
-    iterator = None
+    iteratable_results = None
     sort = sort.lower()
     if sort == "top":
-        iterator = sub.top(time_filter=time_filter, limit=limit)
+        iteratable_results = sub.top(time_filter=time_filter, limit=limit)
     elif sort == "hot":
-        iterator = sub.hot(limit=limit)
+        iteratable_results = sub.hot(limit=limit)
     elif sort == "new":
-        iterator = sub.new(limit=limit)
+        iteratable_results = sub.new(limit=limit)
     elif sort == "rising":
-        iterator = sub.rising(limit=limit)
+        iteratable_results = sub.rising(limit=limit)
     else:
         logger.warning(f"Unknown sort '{sort}', defaulting to top")
-        iterator = sub.top(time_filter=time_filter, limit=limit)
+        iteratable_results = sub.top(time_filter=time_filter, limit=limit)
 
     out_jsonl = f"{output_prefix}_{subreddit_name}_{sort}_{time_filter}_{limit}.jsonl"
     out_csv = f"{output_prefix}_{subreddit_name}_{sort}_{time_filter}_{limit}.csv"
@@ -149,51 +134,59 @@ def scrape_subreddit(
     rows = []
 
     count = 0
-    for submission in tqdm(iterator, total=limit if isinstance(limit, int) else None):
+    for post in tqdm(
+        iteratable_results, total=limit if isinstance(limit, int) else None
+    ):
         try:
             # Basic submission fields
-            submission_data = {
-                "id": submission.id,
-                "title": redact_text(submission.title),
-                "selftext": redact_text(getattr(submission, "selftext", "")),
-                "score": getattr(submission, "score", None),
-                "created_utc": getattr(submission, "created_utc", None),
-                "num_comments": getattr(submission, "num_comments", None),
+            post_data = {
+                "id": post.id,
+                "title": redact_text(post.title),
+                "selftext": redact_text(getattr(post, "selftext", "")),
+                "score": getattr(post, "score", None),
+                "created_utc": getattr(post, "created_utc", None),
+                "num_comments": getattr(post, "num_comments", None),
                 # TODO: Remove following lines if truly not needed:
                 # "url": "[URL]" if getattr(submission, "url", None) else None,
                 # "author": "[USER]" if getattr(submission, "author", None) else None,
-                "permalink": submission.permalink,
+                "permalink": getattr(post, "permalink", None),
             }
 
-            top_comments_list = extract_top_comments(submission, top_n=top_comments)
-            submission_data["top_comments"] = top_comments_list
+            top_comments_list = extract_top_comments(post, top_n=top_comments)
+            post_data["top_comments"] = top_comments_list
 
-            # write to jsonl
-            jsonl_f.write(json.dumps(submission_data, ensure_ascii=False) + "\n")
+            if post_data.title != "":
+                # write to jsonl
+                jsonl_f.write(json.dumps(post_data, ensure_ascii=False) + "\n")
 
-            # For CSV row: flatten comments into a single string separated by " ||| "
-            comments_flat = " ||| ".join([c["body"] for c in top_comments_list])
-            rows.append(
-                {
-                    "id": submission_data["id"],
-                    "title": submission_data["title"],
-                    "selftext": submission_data["selftext"],
-                    "top_comments": comments_flat,
-                    "score": submission_data["score"],
-                    "num_comments": submission_data["num_comments"],
-                    "created_utc": submission_data["created_utc"],
-                    "permalink": submission_data["permalink"],
-                }
-            )
+                # For CSV row: flatten comments into a single string separated by " ||| "
+                comments_flat = " ||| ".join(
+                    [
+                        c["body"].replace("\n", "").replace("\r", "")
+                        for c in top_comments_list
+                    ]
+                )
+                rows.append(
+                    {
+                        "id": post_data["id"],
+                        "title": post_data["title"],
+                        "selftext": post_data["selftext"],
+                        "top_comments": comments_flat,
+                        "score": post_data["score"],
+                        "num_comments": post_data["num_comments"],
+                        "created_utc": post_data["created_utc"],
+                        "permalink": post_data["permalink"],
+                    }
+                )
 
-            count += 1
-            # small sleep to be polite and avoid bursts; PRAW handles rate-limits but this helps
-            time.sleep(0.2)
+                count += 1
+                # small sleep to be polite and avoid bursts; PRAW handles rate-limits but this helps????
+                # time.sleep(0.1)
         except Exception as e:
             jsonl_f.close()
 
             logger.exception(
-                f"Error processing submission id={getattr(submission, 'id', None)}: {e}"
+                f"Error processing submission id={getattr(post, 'id', None)}: {e}"
             )
             # continue to next submission
 
