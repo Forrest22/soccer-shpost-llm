@@ -155,7 +155,7 @@ def scrape_subreddit(
             top_comments_list = extract_top_comments(post, top_n=top_comments)
             post_data["top_comments"] = top_comments_list
 
-            if post_data.title != "":
+            if post_data["title"] != "":
                 # write to jsonl
                 jsonl_f.write(json.dumps(post_data, ensure_ascii=False) + "\n")
 
