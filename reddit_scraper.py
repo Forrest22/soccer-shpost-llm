@@ -98,16 +98,17 @@ def extract_top_comments(post, top_n=5) -> List[Dict[str, Any]]:
 
 
 def scrape_subreddit(
+    # these defaults are for defensive purposes, real defaults are defined at parser argument instantiation
     subreddit_name: str,
     sort: str = "top",
     time_filter: str = "all",
     limit: int = 250,
-    top_comments: int = 5,
+    top_comments: int = 10,
     output_prefix: str = "soccercirclejerk",
 ) -> None:
     reddit_scraper = init_reddit_creds()
     logger.info(
-        f"Scraping r/{subreddit_name} | sort={sort} time_filter={time_filter} limit={limit} top_comments={top_comments}"
+        f"Scraping r/{subreddit_name} | sort={sort} time={time_filter} limit={limit} top_comments={top_comments}"
     )
     sub = reddit_scraper.subreddit(subreddit_name)
 
@@ -146,9 +147,6 @@ def scrape_subreddit(
                 "score": getattr(post, "score", None),
                 "created_utc": getattr(post, "created_utc", None),
                 "num_comments": getattr(post, "num_comments", None),
-                # TODO: Remove following lines if truly not needed:
-                # "url": "[URL]" if getattr(submission, "url", None) else None,
-                # "author": "[USER]" if getattr(submission, "author", None) else None,
                 "permalink": getattr(post, "permalink", None),
             }
 
@@ -170,7 +168,9 @@ def scrape_subreddit(
                     {
                         "id": post_data["id"],
                         "title": post_data["title"],
-                        "selftext": post_data["selftext"],
+                        "selftext": post_data["selftext"]
+                        .replace("\n", "")
+                        .replace("\r", ""),
                         "top_comments": comments_flat,
                         "score": post_data["score"],
                         "num_comments": post_data["num_comments"],
@@ -180,7 +180,7 @@ def scrape_subreddit(
                 )
 
                 count += 1
-                # small sleep to be polite and avoid bursts; PRAW handles rate-limits but this helps????
+                # small sleep to be polite and avoid bursts; PRAW handles rate-limits but does this help????
                 # time.sleep(0.1)
         except Exception as e:
             jsonl_f.close()
@@ -220,17 +220,17 @@ def main():
         help="Sort order",
     )
     parser.add_argument(
-        "--time_filter",
+        "--time",
         "-t",
         default="all",
-        choices=["all", "day", "hour", "month", "week", "year"],
+        choices=["all", "year", "month", "week", "day", "hour"],
         help="Time filter for top",
     )
     parser.add_argument(
         "--top_comments",
         "-c",
         type=int,
-        default=5,
+        default=10,
         help="Top N comments to include per submission",
     )
     parser.add_argument(
@@ -243,7 +243,7 @@ def main():
             subreddit_name=args.subreddit,
             limit=args.limit,
             sort=args.sort,
-            time_filter=args.time_filter,
+            time_filter=args.time,
             top_comments=args.top_comments,
             output_prefix=args.output_prefix,
         )
